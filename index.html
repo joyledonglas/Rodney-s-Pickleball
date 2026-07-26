@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rodney's Pickleball Spot — Book a Court</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Work+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app">
+  <div class="hero">
+    <p class="eyebrow">Rodney's Pickleball Spot</p>
+    <h1>Book Your Court</h1>
+    <p class="sub">Pick your hour, confirm, and pay by QR. Spots go fast on weekends.</p>
+  </div>
+
+  <div class="section-label">Choose a date</div>
+  <div class="date-strip" id="dateStrip"></div>
+
+  <div class="grid-wrap">
+    <div class="grid-heading">
+      <div>
+        <div class="full-date" id="fullDate">—</div>
+        <div class="day-hours" id="dayHours" style="font-family:'JetBrains Mono', monospace; font-size:11px; color: var(--gray); margin-top:2px;"></div>
+      </div>
+      <div class="legend">
+        <span><i class="dot open"></i>Open</span>
+        <span><i class="dot sel"></i>Selected</span>
+        <span><i class="dot booked"></i>Reserved / Booked</span>
+        <span><i class="dot openhouse"></i>Open House</span>
+      </div>
+    </div>
+    <div class="slots" id="slots"></div>
+  </div>
+  <div class="owner-link-wrap">
+    <a class="owner-link" href="/admin" style="text-decoration:underline;">Court owner? Manage bookings</a>
+  </div>
+</div>
+
+<div class="cart-bar" id="cartBar">
+  <div class="cart-inner">
+    <div class="cart-chips" id="cartChips"></div>
+    <div class="cart-right">
+      <div class="cart-total" id="cartTotal">₱0</div>
+      <button class="btn btn-primary" id="confirmOpenBtn">Confirm booking</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm details modal -->
+<div class="overlay" id="detailsOverlay">
+  <div class="modal">
+    <h2>Confirm your slots</h2>
+    <p class="hint">We'll hold these times once you submit your info.</p>
+    <div class="modal-summary" id="detailsSummary"></div>
+    <div class="field">
+      <label>Full name</label>
+      <input type="text" id="nameInput" placeholder="Juan Dela Cruz">
+    </div>
+    <div class="field">
+      <label>Mobile number</label>
+      <input type="text" id="phoneInput" placeholder="09XX XXX XXXX">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cancelDetailsBtn">Back</button>
+      <button class="btn btn-primary" id="submitDetailsBtn">Next</button>
+    </div>
+  </div>
+</div>
+
+<!-- Payment method choice -->
+<div class="overlay" id="methodOverlay">
+  <div class="modal">
+    <h2>How will you pay?</h2>
+    <p class="hint">Choose how you'd like to settle this booking.</p>
+    <div class="modal-summary" id="methodSummary"></div>
+    <div class="method-options">
+      <button class="method-option" id="chooseCashBtn">
+        <span class="method-icon">₱</span>
+        <span class="method-label">Pay with Cash</span>
+        <span class="method-sub">Pay at the counter on arrival</span>
+      </button>
+      <button class="method-option" id="chooseQrBtn">
+        <span class="method-icon">▦</span>
+        <span class="method-label">Pay with QR</span>
+        <span class="method-sub">Scan and pay now via GCash</span>
+      </button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="backToDetailsBtn" style="flex:1">Back</button>
+    </div>
+  </div>
+</div>
+
+<!-- Payment QR modal -->
+<div class="overlay" id="payOverlay">
+  <div class="modal">
+    <h2 id="payHeading">Scan to pay</h2>
+    <p class="hint" id="payHint">Your slot is reserved. Complete payment to lock it in.</p>
+    <div class="qr-wrap" id="qrWrap"><img id="qrImg" alt="Payment QR code"></div>
+    <div class="pay-amount" id="payAmount">₱0</div>
+    <div class="pay-ref" id="payRef">Ref: —</div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="doneBtn" style="flex:1">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module">
+import { db } from './firebase-init.js';
+import {
+  collection, doc, onSnapshot, runTransaction
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+// ---------- Config (edit these to match your business) ----------
+// Time-based pricing: day rate applies to slots starting 6:00 AM – 5:59 PM,
+// evening rate applies to slots starting 6:00 PM – 9:00 PM.
+const RATE_DAY = 150;      // PHP, for slots starting before 6 PM
+const RATE_EVENING = 200;  // PHP, for slots starting 6 PM or later
+
+function getRateForTime(time){
+  const h = parseInt(time, 10);
+  return h < 18 ? RATE_DAY : RATE_EVENING;
+}
+const OPEN_HOUR = 6;   // 6 AM
+const CLOSE_HOUR = 21; // last start time on weekdays (9 PM start, ends 10 PM)
+const WEEKEND_CLOSE_HOUR = 17; // Fri/Sat/Sun: last start time is 5 PM, so play ends by 6 PM
+const WEEKEND_DAYS = [0, 5, 6]; // Sun=0, Fri=5, Sat=6
+const DAYS_AHEAD_START = 0; // booking can be made starting the current date
+const DAYS_TO_SHOW = 30;    // 30 bookable days once the window opens
+const GCASH_NUMBER = "0917 123 4567"; // placeholder — replace with real GCash/PayMaya number
+
+const dateStrip = document.getElementById('dateStrip');
+const slotsEl = document.getElementById('slots');
+const fullDateEl = document.getElementById('fullDate');
+const cartBar = document.getElementById('cartBar');
+const cartChips = document.getElementById('cartChips');
+const cartTotal = document.getElementById('cartTotal');
+const toastEl = document.getElementById('toast');
+
+let allBookings = {};      // { "2026-07-19": [{time:"14:00", name, phone, ...}], ... } — kept in sync live from Firestore
+let selected = [];         // [{dateKey, label, time, rate}]
+let activeDateKey = null;
+
+function pad(n){ return n.toString().padStart(2,'0'); }
+function dateKey(d){ return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+function fmtHour(h){
+  const period = h >= 12 ? 'PM' : 'AM';
+  let hr = h % 12; if(hr===0) hr=12;
+  return `${hr}:00 ${period}`;
+}
+function showToast(msg){
+  toastEl.textContent = msg;
+  toastEl.style.display = 'block';
+  setTimeout(()=>{ toastEl.style.display = 'none'; }, 2400);
+}
+function docIdFor(dKey, time){
+  return `${dKey}_${time.replace(':','')}`;
+}
+
+// ---------- Overlay/modal helpers ----------
+function showOverlay(el){
+  el.classList.add('show');
+  document.body.classList.add('no-scroll');
+}
+function hideOverlay(el){
+  el.classList.remove('show');
+  const anyStillOpen = document.querySelectorAll('.overlay.show').length > 0;
+  if(!anyStillOpen) document.body.classList.remove('no-scroll');
+}
+
+// ---------- Live bookings feed from Firestore ----------
+// Every visitor's page updates in real time as slots get booked/cancelled/paid,
+// so two people can never end up double-booking the same slot.
+function subscribeToBookings(){
+  const bookingsRef = collection(db, 'bookings');
+  onSnapshot(bookingsRef, (snap)=>{
+    const map = {};
+    snap.forEach(docSnap=>{
+      const b = docSnap.data();
+      if(!map[b.date]) map[b.date] = [];
+      map[b.date].push(b);
+    });
+    allBookings = map;
+    if(activeDateKey) renderSlots();
+  }, (err)=>{
+    console.error('Bookings listener error:', err);
+    showToast('Could not load live availability — check your connection');
+  });
+}
+
+// ---------- Date strip ----------
+const today = new Date();
+today.setHours(0,0,0,0);
+const firstBookable = new Date(today);
+firstBookable.setDate(firstBookable.getDate() + DAYS_AHEAD_START);
+
+const days = [];
+const TOTAL_DAYS_SHOWN = DAYS_AHEAD_START + DAYS_TO_SHOW;
+for(let i=0;i<TOTAL_DAYS_SHOWN;i++){
+  const d = new Date(today);
+  d.setDate(d.getDate()+i);
+  days.push(d);
+}
+
+function renderDateStrip(){
+  dateStrip.innerHTML = '';
+  days.forEach((d)=>{
+    const key = dateKey(d);
+    const pill = document.createElement('div');
+    pill.className = 'date-pill' + (key===activeDateKey ? ' active' : '');
+    pill.innerHTML = `
+      <div class="dow">${d.toLocaleDateString('en-US',{weekday:'short'})}</div>
+      <div class="dnum">${d.getDate()}</div>
+      <div class="mon">${d.toLocaleDateString('en-US',{month:'short'})}</div>
+    `;
+    pill.addEventListener('click', ()=>{
+      activeDateKey = key;
+      renderDateStrip();
+      renderSlots();
+    });
+    dateStrip.appendChild(pill);
+  });
+}
+
+function getCloseHourFor(d){
+  return WEEKEND_DAYS.includes(d.getDay()) ? WEEKEND_CLOSE_HOUR : CLOSE_HOUR;
+}
+
+function renderSlots(){
+  const d = days.find(dd => dateKey(dd) === activeDateKey);
+  fullDateEl.textContent = d.toLocaleDateString('en-US',{weekday:'long', month:'long', day:'numeric'});
+  slotsEl.innerHTML = '';
+
+  if(d < firstBookable){
+    document.getElementById('dayHours').textContent = '';
+    const notice = document.createElement('div');
+    notice.className = 'empty-state';
+    notice.style.gridColumn = '1 / -1';
+    notice.textContent = `Bookings for this date open on ${firstBookable.toLocaleDateString('en-US',{weekday:'long', month:'long', day:'numeric'})}. Please pick a later date.`;
+    slotsEl.appendChild(notice);
+    return;
+  }
+
+  const closeHour = getCloseHourFor(d);
+  document.getElementById('dayHours').textContent =
+    `Open ${fmtHour(OPEN_HOUR)} – ${fmtHour(closeHour+1)}`;
+  const entriesForDay = allBookings[activeDateKey] || [];
+
+  for(let h=OPEN_HOUR; h<=closeHour; h++){
+    if(h === OPEN_HOUR){
+      const label = document.createElement('div');
+      label.className = 'price-section-label';
+      label.innerHTML = `<span>6:00 AM – 5:59 PM</span><span class="price">₱${RATE_DAY}</span>`;
+      slotsEl.appendChild(label);
+    }
+    if(h === 18){
+      const div = document.createElement('div');
+      div.className = 'section-divider';
+      slotsEl.appendChild(div);
+      const label = document.createElement('div');
+      label.className = 'price-section-label';
+      label.innerHTML = `<span>6:00 PM – 9:00 PM</span><span class="price">₱${RATE_EVENING}</span>`;
+      slotsEl.appendChild(label);
+    }
+    const time = `${pad(h)}:00`;
+    const btn = document.createElement('div');
+    btn.className = 'slot';
+    btn.textContent = fmtHour(h);
+
+    const entry = entriesForDay.find(b => b.time === time);
+    const isBooked = !!entry;
+    const isSelected = selected.some(s => s.dateKey===activeDateKey && s.time===time);
+
+    if(isBooked){
+      btn.classList.add('booked');
+      if(entry.openHouse){
+        btn.classList.add('open-house');
+        btn.textContent += ' · Open House';
+      } else if(entry.status === 'paid'){
+        btn.textContent += ' · Booked';
+      } else {
+        btn.textContent += ' · Reserved';
+      }
+    } else if(isSelected){
+      btn.classList.add('selected');
+    }
+
+    if(!isBooked){
+      btn.addEventListener('click', ()=> toggleSlot(activeDateKey, time, d));
+    }
+    slotsEl.appendChild(btn);
+  }
+}
+
+function toggleSlot(dKey, time, dateObj){
+  const idx = selected.findIndex(s => s.dateKey===dKey && s.time===time);
+  if(idx >= 0){
+    selected.splice(idx,1);
+  }else{
+    selected.push({
+      dateKey: dKey,
+      time,
+      rate: getRateForTime(time),
+      label: `${dateObj.toLocaleDateString('en-US',{month:'short', day:'numeric'})} · ${fmtHour(parseInt(time))}`
+    });
+  }
+  renderSlots();
+  renderCart();
+}
+
+function renderCart(){
+  if(selected.length === 0){
+    cartBar.classList.remove('show');
+    return;
+  }
+  cartBar.classList.add('show');
+  cartChips.innerHTML = '';
+  selected.forEach(s=>{
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.innerHTML = `${s.label} <button data-key="${s.dateKey}|${s.time}">✕</button>`;
+    chip.querySelector('button').addEventListener('click', (e)=>{
+      const [dKey, time] = e.currentTarget.dataset.key.split('|');
+      selected = selected.filter(s => !(s.dateKey===dKey && s.time===time));
+      renderSlots();
+      renderCart();
+    });
+    cartChips.appendChild(chip);
+  });
+  cartTotal.textContent = `₱${selected.reduce((sum, s) => sum + s.rate, 0).toLocaleString()}`;
+}
+
+// ---------- Confirm details modal ----------
+const detailsOverlay = document.getElementById('detailsOverlay');
+const detailsSummary = document.getElementById('detailsSummary');
+const nameInput = document.getElementById('nameInput');
+const phoneInput = document.getElementById('phoneInput');
+
+document.getElementById('confirmOpenBtn').addEventListener('click', ()=>{
+  if(selected.length===0) return;
+  renderSummaryBlock(detailsSummary);
+  showOverlay(detailsOverlay);
+});
+document.getElementById('cancelDetailsBtn').addEventListener('click', ()=>{
+  hideOverlay(detailsOverlay);
+});
+
+function renderSummaryBlock(el){
+  const total = selected.reduce((sum, s) => sum + s.rate, 0);
+  el.innerHTML = selected.map(s=>`<div><span>${s.label}</span><span>₱${s.rate}</span></div>`).join('')
+    + `<div style="margin-top:6px;border-top:1px solid rgba(255,255,255,0.1);padding-top:6px;"><span>Total</span><span>₱${total.toLocaleString()}</span></div>`;
+}
+
+document.getElementById('submitDetailsBtn').addEventListener('click', ()=>{
+  const name = nameInput.value.trim();
+  const phone = phoneInput.value.trim();
+  if(!name || !phone){
+    showToast('Please enter your name and mobile number');
+    return;
+  }
+  renderSummaryBlock(methodSummary);
+  hideOverlay(detailsOverlay);
+  showOverlay(methodOverlay);
+});
+
+// ---------- Payment method modal ----------
+const methodOverlay = document.getElementById('methodOverlay');
+const methodSummary = document.getElementById('methodSummary');
+
+document.getElementById('backToDetailsBtn').addEventListener('click', ()=>{
+  hideOverlay(methodOverlay);
+  showOverlay(detailsOverlay); // name/phone values are preserved
+});
+
+document.getElementById('chooseCashBtn').addEventListener('click', async ()=>{
+  await finalizeBooking('cash');
+});
+document.getElementById('chooseQrBtn').addEventListener('click', async ()=>{
+  await finalizeBooking('qr');
+});
+
+// Creates each selected slot as its own Firestore document, keyed so that two
+// people can never both grab the same slot: the transaction reads the doc first,
+// and only writes if it doesn't already exist. If someone else grabbed a slot a
+// split-second earlier, that one slot is skipped and the customer is told which one.
+async function finalizeBooking(method){
+  const name = nameInput.value.trim();
+  const phone = phoneInput.value.trim();
+  if(!name || !phone){
+    hideOverlay(methodOverlay);
+    showOverlay(detailsOverlay);
+    showToast('Please enter your name and mobile number');
+    return;
+  }
+
+  const bookingId = 'PX' + Date.now().toString().slice(-8);
+  const succeeded = [];
+  const conflicts = [];
+
+  for(const s of selected){
+    const ref = doc(db, 'bookings', docIdFor(s.dateKey, s.time));
+    try{
+      await runTransaction(db, async (tx)=>{
+        const snap = await tx.get(ref);
+        if(snap.exists()) throw new Error('taken');
+        tx.set(ref, {
+          date: s.dateKey,
+          time: s.time,
+          name, phone, bookingId,
+          bookedAt: new Date().toISOString(),
+          status: 'reserved',
+          method,
+          amount: s.rate
+        });
+      });
+      succeeded.push(s);
+    }catch(e){
+      conflicts.push(s);
+    }
+  }
+
+  if(conflicts.length > 0){
+    showToast(`Sorry, ${conflicts[0].label} was just booked by someone else.`);
+  }
+
+  selected = selected.filter(s => conflicts.includes(s)); // keep only the ones that failed, so the customer can adjust
+  renderSlots();
+  renderCart();
+  hideOverlay(methodOverlay);
+
+  if(succeeded.length === 0){
+    return; // nothing went through — stay on the calendar so they can pick a different time
+  }
+
+  const total = succeeded.reduce((sum, s) => sum + s.rate, 0);
+  if(method === 'qr'){
+    openPaymentModal(total, bookingId);
+  }else{
+    openCashConfirmation(total, bookingId);
+  }
+
+  nameInput.value=''; phoneInput.value='';
+}
+
+// ---------- Payment / confirmation modal ----------
+const payOverlay = document.getElementById('payOverlay');
+const payHeading = document.getElementById('payHeading');
+const payHint = document.getElementById('payHint');
+const qrWrap = document.getElementById('qrWrap');
+const qrImg = document.getElementById('qrImg');
+const payAmount = document.getElementById('payAmount');
+const payRef = document.getElementById('payRef');
+
+// Static payment QR (e.g. your GCash/PayMaya "Pay via QR" code).
+// Replace PAYMENT_QR_SRC with your own QR image (hosted URL, or a base64 data URI).
+const PAYMENT_QR_SRC = "https://a3osnjyi59tdrwtz.public.blob.vercel-storage.com/%40joyled-wisetag.png";
+
+function openPaymentModal(amount, ref){
+  payHeading.textContent = 'Scan to pay';
+  payHint.textContent = 'Your slot is reserved. Complete payment to lock it in.';
+  qrWrap.style.display = '';
+  qrImg.src = PAYMENT_QR_SRC;
+  payAmount.textContent = `₱${amount}`;
+  payRef.textContent = `Ref: ${ref} · GCash 09061356251 · Rodney's Pickleball Spot`;
+  showOverlay(payOverlay);
+}
+
+function openCashConfirmation(amount, ref){
+  payHeading.textContent = 'Reserved — pay cash';
+  payHint.textContent = "You're reserved. Please pay in cash at the counter when you arrive.";
+  qrWrap.style.display = 'none';
+  payAmount.textContent = `₱${amount}`;
+  payRef.textContent = `Ref: ${ref} · Cash on arrival · Rodney's Pickleball Spot`;
+  showOverlay(payOverlay);
+}
+
+document.getElementById('doneBtn').addEventListener('click', ()=>{
+  hideOverlay(payOverlay);
+  showToast('Reserved — pending payment confirmation');
+});
+
+// ---------- Init ----------
+activeDateKey = dateKey(days[0]);
+renderDateStrip();
+subscribeToBookings();
+renderSlots();
+renderCart();
+</script>
+</body>
+</html>

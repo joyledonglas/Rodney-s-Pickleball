@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Manage Bookings — Rodney's Pickleball Spot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Work+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  /* This page IS the admin page, so it should always be visible (not fixed/overlay-style). */
+  body{ background: var(--navy); }
+  .page-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:16px;
+    padding:18px 20px;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  .page-title{
+    font-family:'Bebas Neue', sans-serif;
+    font-size:24px;
+    letter-spacing:.02em;
+    margin:0;
+  }
+  .page-content{
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 0 20px 60px;
+  }
+  .auth-content{
+    max-width: 380px;
+    padding-top: 60px;
+    margin: 0 auto;
+  }
+  .logout-btn{
+    background: rgba(255,255,255,0.06);
+    border:1px solid rgba(255,255,255,0.12);
+    color: var(--line);
+    font-family:'Work Sans', sans-serif;
+    font-size:13px;
+    font-weight:600;
+    padding:9px 14px;
+    border-radius:999px;
+    cursor:pointer;
+    white-space:nowrap;
+  }
+  .logout-btn:hover{ background: rgba(255,255,255,0.12); }
+  .back-link{
+    color: var(--gray);
+    font-size:12px;
+    text-decoration:underline;
+    text-underline-offset:3px;
+  }
+  .back-link:hover{ color: var(--ball); }
+  .auth-error{
+    color: var(--coral);
+    font-size:12px;
+    margin: -8px 0 12px;
+    min-height:14px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ---------- Login gate ---------- -->
+<div id="authSection">
+  <div class="page-content auth-content">
+    <h2>Owner access</h2>
+    <p class="hint">Sign in to manage bookings.</p>
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="loginEmail" placeholder="you@example.com" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <div class="auth-error" id="authError"></div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="loginBtn" style="flex:1">Sign in</button>
+    </div>
+    <p style="margin-top:18px;"><a class="back-link" href="/">← Back to booking</a></p>
+  </div>
+</div>
+
+<!-- ---------- Dashboard (shown once signed in) ---------- -->
+<div id="dashboardSection" style="display:none;">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">Manage Bookings</h1>
+      <a class="back-link" href="/">← Back to booking page</a>
+    </div>
+    <button class="logout-btn" id="logoutBtn">Log out</button>
+  </div>
+
+  <div class="page-content">
+    <p class="hint">Full booking database, daily profit, and cancellations.</p>
+
+    <div class="date-filter">
+      <div class="date-filter-field">
+        <label>Start date</label>
+        <input type="date" id="filterStartDate">
+      </div>
+      <div class="date-filter-field">
+        <label>End date</label>
+        <input type="date" id="filterEndDate">
+      </div>
+      <button class="date-filter-clear" id="filterClearBtn">Clear</button>
+    </div>
+
+    <div class="admin-tabs">
+      <button class="admin-tab active" data-tab="summary" id="tabSummaryBtn">Profit summary</button>
+      <button class="admin-tab" data-tab="bookings" id="tabBookingsBtn">All bookings</button>
+    </div>
+
+    <div class="admin-pane" id="paneSummary">
+      <div class="admin-totals" id="adminTotals"></div>
+      <div class="admin-summary-list" id="adminSummaryList"></div>
+    </div>
+
+    <div class="admin-pane" id="paneBookings" style="display:none;">
+      <div class="admin-list" id="adminList"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module">
+import { db, auth } from './firebase-init.js';
+import {
+  collection, doc, onSnapshot, updateDoc, deleteDoc
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  signInWithEmailAndPassword, onAuthStateChanged, signOut
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+function getRateForTime(time){
+  const h = parseInt(time, 10);
+  return h < 18 ? 150 : 200; // keep in sync with the rates on index.html
+}
+function docIdFor(dKey, time){
+  return `${dKey}_${time.replace(':','')}`;
+}
+
+const toastEl = document.getElementById('toast');
+function showToast(msg){
+  toastEl.textContent = msg;
+  toastEl.style.display = 'block';
+  setTimeout(()=>{ toastEl.style.display = 'none'; }, 2400);
+}
+function fmtHour(h){
+  const period = h >= 12 ? 'PM' : 'AM';
+  let hr = h % 12; if(hr===0) hr=12;
+  return `${hr}:00 ${period}`;
+}
+
+let allBookings = {}; // { "2026-07-19": [{time, name, phone, status, amount, ...}], ... } — live from Firestore
+let unsubscribeBookings = null;
+
+// ---------- Auth gate ----------
+const authSection = document.getElementById('authSection');
+const dashboardSection = document.getElementById('dashboardSection');
+const loginEmail = document.getElementById('loginEmail');
+const loginPassword = document.getElementById('loginPassword');
+const authError = document.getElementById('authError');
+
+document.getElementById('loginBtn').addEventListener('click', async ()=>{
+  authError.textContent = '';
+  try{
+    await signInWithEmailAndPassword(auth, loginEmail.value.trim(), loginPassword.value);
+  }catch(e){
+    authError.textContent = 'Sign in failed — check your email and password.';
+  }
+});
+loginPassword.addEventListener('keydown', (e)=>{
+  if(e.key === 'Enter') document.getElementById('loginBtn').click();
+});
+document.getElementById('logoutBtn').addEventListener('click', ()=>{
+  signOut(auth);
+});
+
+onAuthStateChanged(auth, (user)=>{
+  if(user){
+    authSection.style.display = 'none';
+    dashboardSection.style.display = 'block';
+    subscribeToBookings();
+  }else{
+    authSection.style.display = 'block';
+    dashboardSection.style.display = 'none';
+    if(unsubscribeBookings){ unsubscribeBookings(); unsubscribeBookings = null; }
+  }
+});
+
+// ---------- Live bookings feed ----------
+function subscribeToBookings(){
+  if(unsubscribeBookings) return; // already subscribed
+  const bookingsRef = collection(db, 'bookings');
+  unsubscribeBookings = onSnapshot(bookingsRef, (snap)=>{
+    const map = {};
+    snap.forEach(docSnap=>{
+      const b = docSnap.data();
+      if(!map[b.date]) map[b.date] = [];
+      map[b.date].push(b);
+    });
+    allBookings = map;
+    renderAdminSummary();
+    renderAdminList();
+  }, (err)=>{
+    console.error('Bookings listener error:', err);
+    showToast('Could not load bookings — check your connection');
+  });
+}
+
+// ---------- Tabs ----------
+const paneSummary = document.getElementById('paneSummary');
+const paneBookings = document.getElementById('paneBookings');
+const tabSummaryBtn = document.getElementById('tabSummaryBtn');
+const tabBookingsBtn = document.getElementById('tabBookingsBtn');
+
+tabSummaryBtn.addEventListener('click', ()=>{
+  tabSummaryBtn.classList.add('active');
+  tabBookingsBtn.classList.remove('active');
+  paneSummary.style.display = '';
+  paneBookings.style.display = 'none';
+});
+tabBookingsBtn.addEventListener('click', ()=>{
+  tabBookingsBtn.classList.add('active');
+  tabSummaryBtn.classList.remove('active');
+  paneBookings.style.display = '';
+  paneSummary.style.display = 'none';
+});
+
+// ---------- Date range filter ----------
+const filterStartDate = document.getElementById('filterStartDate');
+const filterEndDate = document.getElementById('filterEndDate');
+const filterClearBtn = document.getElementById('filterClearBtn');
+
+function getFilteredDateKeys(){
+  const start = filterStartDate.value;
+  const end = filterEndDate.value;
+  return Object.keys(allBookings)
+    .filter(k => (allBookings[k]||[]).length > 0)
+    .filter(k => (!start || k >= start) && (!end || k <= end))
+    .sort();
+}
+
+filterStartDate.addEventListener('change', ()=>{ renderAdminSummary(); renderAdminList(); });
+filterEndDate.addEventListener('change', ()=>{ renderAdminSummary(); renderAdminList(); });
+filterClearBtn.addEventListener('click', ()=>{
+  filterStartDate.value = '';
+  filterEndDate.value = '';
+  renderAdminSummary();
+  renderAdminList();
+});
+
+// ---------- Profit summary ----------
+const adminTotals = document.getElementById('adminTotals');
+const adminSummaryList = document.getElementById('adminSummaryList');
+
+function renderAdminSummary(){
+  const dateKeys = getFilteredDateKeys();
+  let totalBookings = 0;
+  let totalPaidRevenue = 0;
+  let totalReservedPending = 0;
+  let totalOpenHousePending = 0;
+  const perDay = [];
+
+  dateKeys.forEach(k=>{
+    const entries = allBookings[k] || [];
+    if(entries.length === 0) return;
+
+    const paidEntries = entries.filter(b => b.status === 'paid');
+    const reservedEntries = entries.filter(b => b.status === 'reserved');
+    const openHouseEntries = entries.filter(b => b.status === 'open_house');
+
+    const dayRevenue = paidEntries.reduce((sum, b) => sum + (b.amount ?? getRateForTime(b.time)), 0);
+    const dayReservedPending = reservedEntries.reduce((sum, b) => sum + (b.amount ?? getRateForTime(b.time)), 0);
+    const dayOpenHousePending = openHouseEntries.reduce((sum, b) => sum + (b.amount || 0), 0);
+
+    totalBookings += entries.length;
+    totalPaidRevenue += dayRevenue;
+    totalReservedPending += dayReservedPending;
+    totalOpenHousePending += dayOpenHousePending;
+
+    perDay.push({
+      key: k,
+      paidCount: paidEntries.length,
+      reservedCount: reservedEntries.length,
+      openHouseCount: openHouseEntries.length,
+      revenue: dayRevenue,
+      pending: dayReservedPending + dayOpenHousePending
+    });
+  });
+
+  const totalPending = totalReservedPending + totalOpenHousePending;
+
+  adminTotals.innerHTML = `
+    <div class="admin-total-card">
+      <div class="label">Total bookings</div>
+      <div class="value">${totalBookings}</div>
+    </div>
+    <div class="admin-total-card">
+      <div class="label">Confirmed profit</div>
+      <div class="value">₱${totalPaidRevenue.toLocaleString()}</div>
+    </div>
+    <div class="admin-total-card">
+      <div class="label">Pending payment</div>
+      <div class="value">₱${totalPending.toLocaleString()}</div>
+    </div>
+  `;
+
+  if(perDay.length === 0){
+    adminSummaryList.innerHTML = '<div class="empty-state">No bookings in this range.</div>';
+    return;
+  }
+
+  adminSummaryList.innerHTML = '';
+  perDay.forEach(row=>{
+    const dObj = new Date(row.key + 'T00:00:00');
+    const el = document.createElement('div');
+    el.className = 'admin-summary-row';
+    const countText = [
+      row.paidCount ? `${row.paidCount} paid` : null,
+      row.reservedCount ? `${row.reservedCount} reserved` : null,
+      row.openHouseCount ? `${row.openHouseCount} open house` : null
+    ].filter(Boolean).join(' · ') || 'No bookings';
+    el.innerHTML = `
+      <div class="day">${dObj.toLocaleDateString('en-US',{weekday:'short', month:'short', day:'numeric'})}</div>
+      <div class="count">${countText}</div>
+      <div class="rev">₱${row.revenue.toLocaleString()}${row.pending ? ` <span style="color:var(--gray);font-weight:500;">(+₱${row.pending.toLocaleString()} pending)</span>` : ''}</div>
+    `;
+    adminSummaryList.appendChild(el);
+  });
+}
+
+// ---------- All bookings (grouped by date, then payee) ----------
+const adminList = document.getElementById('adminList');
+
+function renderAdminList(){
+  const upcoming = getFilteredDateKeys();
+
+  if(upcoming.length === 0){
+    adminList.innerHTML = '<div class="empty-state">No bookings in this range.</div>';
+    return;
+  }
+
+  adminList.innerHTML = '';
+  upcoming.forEach((k, idx)=>{
+    const entries = [...allBookings[k]];
+    if(entries.length === 0) return;
+    const dObj = new Date(k + 'T00:00:00');
+
+    const payeeGroups = {};
+    entries.forEach(b=>{
+      const pKey = `${b.name || 'Unknown'}|${b.phone || ''}`;
+      if(!payeeGroups[pKey]) payeeGroups[pKey] = { name: b.name || 'Unknown', phone: b.phone || '—', items: [] };
+      payeeGroups[pKey].items.push(b);
+    });
+    Object.values(payeeGroups).forEach(g => g.items.sort((a,b)=> a.time.localeCompare(b.time)));
+    const payeeKeys = Object.keys(payeeGroups).sort((a,b)=>
+      payeeGroups[a].items[0].time.localeCompare(payeeGroups[b].items[0].time)
+    );
+
+    const totalCount = entries.length;
+    const totalPaid = entries.filter(b=>b.status==='paid').reduce((s,b)=> s + (b.amount ?? getRateForTime(b.time)), 0);
+
+    const group = document.createElement('details');
+    group.className = 'admin-day-group';
+    if(idx === 0) group.open = true;
+
+    const summary = document.createElement('summary');
+    summary.innerHTML = `
+      <span>${dObj.toLocaleDateString('en-US',{weekday:'short', month:'short', day:'numeric', year:'numeric'})}</span>
+      <span class="meta">${totalCount} booking${totalCount===1?'':'s'} · ₱${totalPaid.toLocaleString()} paid <span class="chev">▸</span></span>
+    `;
+    group.appendChild(summary);
+
+    const body = document.createElement('div');
+    body.className = 'admin-day-body';
+
+    payeeKeys.forEach(pKey=>{
+      const g = payeeGroups[pKey];
+
+      const payeeHeader = document.createElement('div');
+      payeeHeader.className = 'payee-subheader';
+      payeeHeader.textContent = `${g.name}${g.phone && g.phone !== '—' ? ' · ' + g.phone : ''}`;
+      body.appendChild(payeeHeader);
+
+      g.items.forEach(b=>{
+        const row = document.createElement('div');
+        row.className = 'admin-row';
+
+        let infoHTML = `<span class="time">${fmtHour(parseInt(b.time))}</span>`;
+        let actionsHTML = '';
+
+        if(b.status === 'open_house'){
+          infoHTML += ` <span class="status-badge open-house">Open House</span><br>
+            <div class="amount-input-wrap"><span>₱</span><input type="number" min="0" step="1" class="amount-input" placeholder="Enter amount" value="${b.amount != null ? b.amount : ''}"></div>`;
+          actionsHTML = `
+            <button class="mark-btn openhouse" data-date="${k}" data-time="${b.time}" data-action="finalize-openhouse">Mark paid</button>
+            <button class="cancel-btn" data-date="${k}" data-time="${b.time}" data-action="cancel">Cancel</button>
+          `;
+        } else if(b.status === 'paid'){
+          infoHTML += ` · <span class="time">₱${(b.amount ?? getRateForTime(b.time)).toLocaleString()}</span> <span class="status-badge paid">Paid</span>${b.openHouse ? ' <span class="status-badge open-house">Open House</span>' : ''}`;
+          actionsHTML = `
+            <button class="mark-btn undo" data-date="${k}" data-time="${b.time}" data-action="unpay">Undo</button>
+            <button class="cancel-btn" data-date="${k}" data-time="${b.time}" data-action="cancel">Cancel</button>
+          `;
+        } else {
+          infoHTML += ` · <span class="time">₱${(b.amount ?? getRateForTime(b.time)).toLocaleString()}</span> <span class="status-badge reserved">Reserved</span>`;
+          actionsHTML = `
+            <button class="mark-btn paid" data-date="${k}" data-time="${b.time}" data-action="pay">Mark paid</button>
+            <button class="mark-btn openhouse" data-date="${k}" data-time="${b.time}" data-action="mark-openhouse">Open house</button>
+            <button class="cancel-btn" data-date="${k}" data-time="${b.time}" data-action="cancel">Cancel</button>
+          `;
+        }
+
+        row.innerHTML = `<div class="info">${infoHTML}</div><div class="row-actions">${actionsHTML}</div>`;
+
+        row.querySelectorAll('button').forEach(btn=>{
+          btn.addEventListener('click', (e)=>{
+            const { date, time, action } = e.currentTarget.dataset;
+            if(action === 'cancel') cancelBooking(date, time);
+            else if(action === 'pay') setBookingStatus(date, time, 'paid');
+            else if(action === 'unpay') undoPaid(date, time);
+            else if(action === 'mark-openhouse') setBookingStatus(date, time, 'open_house');
+            else if(action === 'finalize-openhouse'){
+              const input = row.querySelector('.amount-input');
+              const val = parseFloat(input.value);
+              if(!val || val <= 0){
+                showToast('Please enter a valid amount before marking paid');
+                return;
+              }
+              finalizeOpenHouse(date, time, val);
+            }
+          });
+        });
+        body.appendChild(row);
+      });
+    });
+
+    group.appendChild(body);
+    adminList.appendChild(group);
+  });
+}
+
+// ---------- Actions: write straight to Firestore ----------
+// (No more read-modify-write of one giant blob — each action updates just its
+// own booking document, so two managers acting at once can never clobber
+// each other's changes.)
+async function setBookingStatus(dKey, time, status){
+  const ref = doc(db, 'bookings', docIdFor(dKey, time));
+  const updates = { status };
+  if(status === 'open_house') updates.openHouse = true;
+  try{
+    await updateDoc(ref, updates);
+    const msg = status === 'paid' ? 'Marked as paid'
+      : status === 'open_house' ? 'Marked as Open House — enter an amount to finalize'
+      : 'Marked as reserved';
+    showToast(msg);
+  }catch(e){
+    console.error(e);
+    showToast('Could not update, please try again');
+  }
+}
+
+async function finalizeOpenHouse(dKey, time, amount){
+  const ref = doc(db, 'bookings', docIdFor(dKey, time));
+  try{
+    await updateDoc(ref, { amount, status: 'paid', openHouse: true });
+    showToast(`Marked as paid — ₱${amount.toLocaleString()}`);
+  }catch(e){
+    console.error(e);
+    showToast('Could not update, please try again');
+  }
+}
+
+// Undo a "Paid" booking back to its pre-payment state. If it was an Open House
+// booking, it returns to Open House (not plain Reserved) so the manager can
+// re-enter/adjust the amount rather than losing that context.
+async function undoPaid(dKey, time){
+  const entry = (allBookings[dKey] || []).find(b => b.time === time);
+  const newStatus = entry && entry.openHouse ? 'open_house' : 'reserved';
+  const ref = doc(db, 'bookings', docIdFor(dKey, time));
+  try{
+    await updateDoc(ref, { status: newStatus });
+    showToast('Payment undone');
+  }catch(e){
+    console.error(e);
+    showToast('Could not update, please try again');
+  }
+}
+
+async function cancelBooking(dKey, time){
+  const ref = doc(db, 'bookings', docIdFor(dKey, time));
+  try{
+    await deleteDoc(ref);
+    showToast('Booking cancelled');
+  }catch(e){
+    console.error(e);
+    showToast('Could not cancel, please try again');
+  }
+}
+</script>
+</body>
+</html>

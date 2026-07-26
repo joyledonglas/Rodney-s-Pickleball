@@ -1,0 +1,43 @@
+rules_version = '2';
+
+// ---------------------------------------------------------------------------
+// Paste this into: Firebase console → your project → Firestore Database → Rules
+// ---------------------------------------------------------------------------
+// What this enforces:
+//  - Anyone (no login needed) can READ bookings, so customers can see which
+//    slots are taken on the public booking page.
+//  - Anyone can CREATE a new booking, but ONLY with status "reserved" — a
+//    customer's browser can never directly write a "paid" booking. This
+//    matters even though the app's own UI never offers that option, because
+//    security rules are what actually stop someone from doing it by hand
+//    via the API (browser JS can always be inspected/modified by the user).
+//  - Only a signed-in manager (Firebase Auth) can UPDATE a booking's status
+//    (mark paid, mark Open House, undo) or DELETE (cancel) a booking.
+// ---------------------------------------------------------------------------
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /bookings/{bookingId} {
+
+      // Public read access — needed so the booking calendar can show which
+      // slots are already taken to every visitor, signed in or not.
+      allow read: if true;
+
+      // Public create access, but locked down to prevent abuse:
+      //  - status must be exactly "reserved" (can't self-mark as paid)
+      //  - the required fields must be present and be the right type
+      allow create:
+        if request.resource.data.status == 'reserved'
+        && request.resource.data.date is string
+        && request.resource.data.time is string
+        && request.resource.data.name is string
+        && request.resource.data.phone is string
+        && request.resource.data.amount is number;
+
+      // Only a signed-in manager account can change status (mark paid, mark
+      // Open House, undo) or cancel/delete a booking.
+      allow update, delete: if request.auth != null;
+    }
+  }
+}

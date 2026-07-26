@@ -354,16 +354,31 @@ function renderAdminList(){
     if(entries.length === 0) return;
     const dObj = new Date(k + 'T00:00:00');
 
-    const payeeGroups = {};
-    entries.forEach(b=>{
-      const pKey = `${b.name || 'Unknown'}|${b.phone || ''}`;
-      if(!payeeGroups[pKey]) payeeGroups[pKey] = { name: b.name || 'Unknown', phone: b.phone || '—', items: [] };
-      payeeGroups[pKey].items.push(b);
-    });
-    Object.values(payeeGroups).forEach(g => g.items.sort((a,b)=> a.time.localeCompare(b.time)));
-    const payeeKeys = Object.keys(payeeGroups).sort((a,b)=>
-      payeeGroups[a].items[0].time.localeCompare(payeeGroups[b].items[0].time)
-    );
+   const payeeGroups = {};
+
+entries.forEach(b => {
+  const pKey = b.bookingId || `${b.name}|${b.phone}`;
+
+  if (!payeeGroups[pKey]) {
+    payeeGroups[pKey] = {
+      bookingId: b.bookingId || "N/A",
+      name: b.name || "Unknown",
+      phone: b.phone || "—",
+      status: b.status,
+      items: []
+    };
+  }
+
+  payeeGroups[pKey].items.push(b);
+});
+
+Object.values(payeeGroups).forEach(group => {
+  group.items.sort((a, b) => a.time.localeCompare(b.time));
+});
+
+const payeeKeys = Object.keys(payeeGroups).sort((a, b) =>
+  payeeGroups[a].items[0].time.localeCompare(payeeGroups[b].items[0].time)
+);
 
     const totalCount = entries.length;
     const totalPaid = entries.filter(b=>b.status==='paid').reduce((s,b)=> s + (b.amount ?? getRateForTime(b.time)), 0);
@@ -385,14 +400,48 @@ function renderAdminList(){
     payeeKeys.forEach(pKey=>{
       const g = payeeGroups[pKey];
 
-      const payeeHeader = document.createElement('div');
-      payeeHeader.className = 'payee-subheader';
-      payeeHeader.textContent = `${g.name}${g.phone && g.phone !== '—' ? ' · ' + g.phone : ''}`;
-      body.appendChild(payeeHeader);
+      const totalAmount = g.items.reduce(
+  (sum, item) => sum + (item.amount ?? getRateForTime(item.time)),
+  0
+);
 
-      g.items.forEach(b=>{
-        const row = document.createElement('div');
-        row.className = 'admin-row';
+const payeeHeader = document.createElement('div');
+payeeHeader.className = 'payee-subheader';
+
+payeeHeader.innerHTML = `
+  <div><strong>${g.name}</strong></div>
+  <div>📞 ${g.phone}</div>
+  <div>Reference #: <strong>${g.bookingId}</strong></div>
+  <div>Time Slots: ${g.items.map(i => fmtHour(parseInt(i.time))).join(', ')}</div>
+  <div>Total: ₱${totalAmount.toLocaleString()}</div>
+`;
+
+body.appendChild(payeeHeader);
+
+     const firstBooking = g.items[0];
+
+const row = document.createElement('div');
+row.className = 'admin-row';
+
+const infoHTML = `
+    <div>
+        <strong>Status:</strong>
+        <span class="status-badge ${firstBooking.status}">
+            ${firstBooking.status.replace('_',' ')}
+        </span>
+    </div>
+`;
+
+let actionsHTML = "";
+
+// Use firstBooking.date/time for the action buttons
+// or update your actions to work on every booking in g.items.
+
+row.innerHTML =
+`<div class="info">${infoHTML}</div>
+ <div class="row-actions">${actionsHTML}</div>`;
+
+body.appendChild(row);
 
         let infoHTML = `<span class="time">${fmtHour(parseInt(b.time))}</span>`;
         let actionsHTML = '';

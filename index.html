@@ -459,7 +459,7 @@ const payRef = document.getElementById('payRef');
 
 // Static payment QR (e.g. your GCash/PayMaya "Pay via QR" code).
 // Replace PAYMENT_QR_SRC with your own QR image (hosted URL, or a base64 data URI).
-const PAYMENT_QR_SRC = "https://a3osnjyi59tdrwtz.public.blob.vercel-storage.com/%40joyled-wisetag.png";
+const PAYMENT_QR_SRC = "https://a3osnjyi59tdrwtz.public.blob.vercel-storage.com/3561-dXh9jpyfZbw24uJZQXra93qGCYUfvH.jpg";
 
 function openPaymentModal(amount, ref){
   payHeading.textContent = 'Scan to pay';
@@ -467,7 +467,7 @@ function openPaymentModal(amount, ref){
   qrWrap.style.display = '';
   qrImg.src = PAYMENT_QR_SRC;
   payAmount.textContent = `₱${amount}`;
-  payRef.textContent = `Ref: ${ref} · GCash 09061356251 · Rodney's Pickleball Spot`;
+  payRef.textContent = `Ref: ${ref} · Rodney's Pickleball Spot`;
   showOverlay(payOverlay);
 }
 

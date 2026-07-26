@@ -355,15 +355,30 @@ function renderAdminList(){
     const dObj = new Date(k + 'T00:00:00');
 
     const payeeGroups = {};
-    entries.forEach(b=>{
-      const pKey = `${b.name || 'Unknown'}|${b.phone || ''}`;
-      if(!payeeGroups[pKey]) payeeGroups[pKey] = { name: b.name || 'Unknown', phone: b.phone || '—', items: [] };
-      payeeGroups[pKey].items.push(b);
-    });
-    Object.values(payeeGroups).forEach(g => g.items.sort((a,b)=> a.time.localeCompare(b.time)));
-    const payeeKeys = Object.keys(payeeGroups).sort((a,b)=>
-      payeeGroups[a].items[0].time.localeCompare(payeeGroups[b].items[0].time)
-    );
+
+entries.forEach(b => {
+  const pKey = b.bookingId || `${b.name}|${b.phone}`;
+
+  if (!payeeGroups[pKey]) {
+    payeeGroups[pKey] = {
+      bookingId: b.bookingId || "N/A",
+      name: b.name || "Unknown",
+      phone: b.phone || "—",
+      status: b.status,
+      items: []
+    };
+  }
+
+  payeeGroups[pKey].items.push(b);
+});
+
+Object.values(payeeGroups).forEach(group => {
+  group.items.sort((a, b) => a.time.localeCompare(b.time));
+});
+
+const payeeKeys = Object.keys(payeeGroups).sort((a, b) =>
+  payeeGroups[a].items[0].time.localeCompare(payeeGroups[b].items[0].time)
+);
 
     const totalCount = entries.length;
     const totalPaid = entries.filter(b=>b.status==='paid').reduce((s,b)=> s + (b.amount ?? getRateForTime(b.time)), 0);
@@ -385,60 +400,48 @@ function renderAdminList(){
     payeeKeys.forEach(pKey=>{
       const g = payeeGroups[pKey];
 
-      const payeeHeader = document.createElement('div');
-      payeeHeader.className = 'payee-subheader';
-      payeeHeader.textContent = `${g.name}${g.phone && g.phone !== '—' ? ' · ' + g.phone : ''}`;
-      body.appendChild(payeeHeader);
+      const totalAmount = g.items.reduce(
+  (sum, item) => sum + (item.amount ?? getRateForTime(item.time)),
+  0
+);
 
-      g.items.forEach(b=>{
-        const row = document.createElement('div');
-        row.className = 'admin-row';
+const payeeHeader = document.createElement('div');
+payeeHeader.className = 'payee-subheader';
 
-        let infoHTML = `<span class="time">${fmtHour(parseInt(b.time))}</span>`;
-        let actionsHTML = '';
+payeeHeader.innerHTML = `
+  <div><strong>${g.name}</strong></div>
+  <div>📞 ${g.phone}</div>
+  <div>Reference #: <strong>${g.bookingId}</strong></div>
+  <div>Time Slots: ${g.items.map(i => fmtHour(parseInt(i.time))).join(', ')}</div>
+  <div>Total: ₱${totalAmount.toLocaleString()}</div>
+`;
 
-        if(b.status === 'open_house'){
-          infoHTML += ` <span class="status-badge open-house">Open House</span><br>
-            <div class="amount-input-wrap"><span>₱</span><input type="number" min="0" step="1" class="amount-input" placeholder="Enter amount" value="${b.amount != null ? b.amount : ''}"></div>`;
-          actionsHTML = `
-            <button class="mark-btn openhouse" data-date="${k}" data-time="${b.time}" data-action="finalize-openhouse">Mark paid</button>
-            <button class="cancel-btn" data-date="${k}" data-time="${b.time}" data-action="cancel">Cancel</button>
-          `;
-        } else if(b.status === 'paid'){
-          infoHTML += ` · <span class="time">₱${(b.amount ?? getRateForTime(b.time)).toLocaleString()}</span> <span class="status-badge paid">Paid</span>${b.openHouse ? ' <span class="status-badge open-house">Open House</span>' : ''}`;
-          actionsHTML = `
-            <button class="mark-btn undo" data-date="${k}" data-time="${b.time}" data-action="unpay">Undo</button>
-            <button class="cancel-btn" data-date="${k}" data-time="${b.time}" data-action="cancel">Cancel</button>
-          `;
-        } else {
-          infoHTML += ` · <span class="time">₱${(b.amount ?? getRateForTime(b.time)).toLocaleString()}</span> <span class="status-badge reserved">Reserved</span>`;
-          actionsHTML = `
-            <button class="mark-btn paid" data-date="${k}" data-time="${b.time}" data-action="pay">Mark paid</button>
-            <button class="mark-btn openhouse" data-date="${k}" data-time="${b.time}" data-action="mark-openhouse">Open house</button>
-            <button class="cancel-btn" data-date="${k}" data-time="${b.time}" data-action="cancel">Cancel</button>
-          `;
-        }
+body.appendChild(payeeHeader);
+      
+     const firstBooking = g.items[0];
 
-        row.innerHTML = `<div class="info">${infoHTML}</div><div class="row-actions">${actionsHTML}</div>`;
+const row = document.createElement('div');
+row.className = 'admin-row';
 
-        row.querySelectorAll('button').forEach(btn=>{
-          btn.addEventListener('click', (e)=>{
-            const { date, time, action } = e.currentTarget.dataset;
-            if(action === 'cancel') cancelBooking(date, time);
-            else if(action === 'pay') setBookingStatus(date, time, 'paid');
-            else if(action === 'unpay') undoPaid(date, time);
-            else if(action === 'mark-openhouse') setBookingStatus(date, time, 'open_house');
-            else if(action === 'finalize-openhouse'){
-              const input = row.querySelector('.amount-input');
-              const val = parseFloat(input.value);
-              if(!val || val <= 0){
-                showToast('Please enter a valid amount before marking paid');
-                return;
-              }
-              finalizeOpenHouse(date, time, val);
-            }
-          });
-        });
+const infoHTML = `
+    <div>
+        <strong>Status:</strong>
+        <span class="status-badge ${firstBooking.status}">
+            ${firstBooking.status.replace('_',' ')}
+        </span>
+    </div>
+`;
+
+let actionsHTML = "";
+
+// Use firstBooking.date/time for the action buttons
+// or update your actions to work on every booking in g.items.
+
+row.innerHTML =
+`<div class="info">${infoHTML}</div>
+ <div class="row-actions">${actionsHTML}</div>`;
+
+body.appendChild(row);
         body.appendChild(row);
       });
     });
